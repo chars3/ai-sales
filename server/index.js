@@ -1,4 +1,3 @@
-// server/index.js
 const express = require("express");
 const http = require("http");
 const WebSocket = require("ws");
@@ -9,6 +8,19 @@ const dotenv = require("dotenv");
 
 dotenv.config();
 
+// Verificar se as chaves de API estão configuradas
+if (!process.env.DEEPGRAM_API_KEY) {
+  console.error("ERRO: A chave de API do Deepgram não está configurada no arquivo .env");
+  console.error("Por favor, crie um arquivo .env na pasta server e adicione DEEPGRAM_API_KEY=sua_chave_aqui");
+  process.exit(1);
+}
+
+if (!process.env.OPENAI_API_KEY) {
+  console.error("ERRO: A chave de API do OpenAI não está configurada no arquivo .env");
+  console.error("Por favor, crie um arquivo .env na pasta server e adicione OPENAI_API_KEY=sua_chave_aqui");
+  process.exit(1);
+}
+
 // Configuração do servidor Express
 const app = express();
 app.use(cors());
@@ -17,7 +29,7 @@ app.use(express.json());
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Configuração do cliente Deepgram
+// Configuração do cliente Deepgram - atualizado para API mais recente
 const deepgramClient = new Deepgram(process.env.DEEPGRAM_API_KEY);
 
 // Configuração do cliente OpenAI
@@ -28,14 +40,16 @@ const openai = new OpenAI({
 // Armazenar conversas por conexão
 const connectionConversations = new Map();
 
-// Configuração do Deepgram para uma conexão WebSocket
+// Configuração do Deepgram para uma conexão WebSocket - atualizada para nova API
 const setupDeepgram = (ws, connectionId) => {
+  console.log("Configurando conexão com Deepgram...");
+  
   // Cria uma conexão de transcrição ao vivo com Deepgram
   const deepgramLive = deepgramClient.transcription.live({
     punctuate: true,
     smart_format: true,
     model: "nova-2",
-    language: "pt-BR",
+    language: "pt-BR", 
     diarize: true,
     interim_results: true,
   });
@@ -50,77 +64,77 @@ const setupDeepgram = (ws, connectionId) => {
   }, 10 * 1000);
 
   // Configurar eventos Deepgram
-  deepgramLive.addListener('open', async () => {
+  deepgramLive.addListener('open', () => {
     console.log(`[${connectionId}] Deepgram: Conectado`);
+  });
 
-    deepgramLive.addListener('transcriptReceived', async (data) => {
-      // Processar transcrição apenas se for final
-      if (data.is_final) {
-        console.log(`[${connectionId}] Deepgram: Transcrição recebida (final)`);
-        
-        // Atualizar a conversa armazenada
-        if (!connectionConversations.has(connectionId)) {
-          connectionConversations.set(connectionId, []);
-        }
-        
-        const transcript = data.channel.alternatives[0].transcript;
-        if (transcript.trim() === "") return;
-        
-        // Identificar o falante (se disponível)
-        let speaker = "unknown";
-        if (data.channel.alternatives[0].words && data.channel.alternatives[0].words.length > 0) {
-          speaker = data.channel.alternatives[0].words[0].speaker || "unknown";
-        }
-        
-        // Determinar se é vendedor ou cliente (simplificado)
-        const role = speaker === "0" ? "vendedor" : "cliente";
-        
-        // Adicionar à conversa
-        const conversation = connectionConversations.get(connectionId);
-        conversation.push({ role, text: transcript });
-        
-        // Manter apenas as últimas 20 mensagens para contexto
-        if (conversation.length > 20) {
-          conversation.shift();
-        }
-        
-        // Enviar transcrição para o cliente
-        ws.send(JSON.stringify({
-          type: "transcript",
-          data: {
-            text: transcript,
-            role: role
-          }
-        }));
-        
-        // Verificar se deve dar uma dica
-        try {
-          const shouldGiveTip = await identifyTipOpportunity(conversation);
-          
-          if (shouldGiveTip === "Sim") {
-            const tip = await generateTip(conversation);
-            ws.send(JSON.stringify({
-              type: "tip",
-              data: {
-                text: tip.text,
-                severity: tip.severity
-              }
-            }));
-          }
-        } catch (error) {
-          console.error(`[${connectionId}] Erro ao analisar conversa:`, error);
-        }
+  deepgramLive.addListener('transcriptReceived', async (data) => {
+    // Processar transcrição apenas se for final
+    if (data.is_final) {
+      console.log(`[${connectionId}] Deepgram: Transcrição recebida (final)`);
+      
+      // Atualizar a conversa armazenada
+      if (!connectionConversations.has(connectionId)) {
+        connectionConversations.set(connectionId, []);
       }
-    });
+      
+      const transcript = data.channel.alternatives[0].transcript;
+      if (transcript.trim() === "") return;
+      
+      // Identificar o falante (se disponível)
+      let speaker = "unknown";
+      if (data.channel.alternatives[0].words && data.channel.alternatives[0].words.length > 0) {
+        speaker = data.channel.alternatives[0].words[0].speaker || "unknown";
+      }
+      
+      // Determinar se é vendedor ou cliente (simplificado)
+      const role = speaker === "0" ? "vendedor" : "cliente";
+      
+      // Adicionar à conversa
+      const conversation = connectionConversations.get(connectionId);
+      conversation.push({ role, text: transcript });
+      
+      // Manter apenas as últimas 20 mensagens para contexto
+      if (conversation.length > 20) {
+        conversation.shift();
+      }
+      
+      // Enviar transcrição para o cliente
+      ws.send(JSON.stringify({
+        type: "transcript",
+        data: {
+          text: transcript,
+          role: role
+        }
+      }));
+      
+      // Verificar se deve dar uma dica
+      try {
+        const shouldGiveTip = await identifyTipOpportunity(conversation);
+        
+        if (shouldGiveTip === "Sim") {
+          const tip = await generateTip(conversation);
+          ws.send(JSON.stringify({
+            type: "tip",
+            data: {
+              text: tip.text,
+              severity: tip.severity
+            }
+          }));
+        }
+      } catch (error) {
+        console.error(`[${connectionId}] Erro ao analisar conversa:`, error);
+      }
+    }
+  });
 
-    deepgramLive.addListener('close', async () => {
-      console.log(`[${connectionId}] Deepgram: Desconectado`);
-      clearInterval(keepAlive);
-    });
+  deepgramLive.addListener('close', () => {
+    console.log(`[${connectionId}] Deepgram: Desconectado`);
+    clearInterval(keepAlive);
+  });
 
-    deepgramLive.addListener('error', async (error) => {
-      console.error(`[${connectionId}] Deepgram: Erro`, error);
-    });
+  deepgramLive.addListener('error', (error) => {
+    console.error(`[${connectionId}] Deepgram: Erro`, error);
   });
 
   return { deepgram: deepgramLive, cleanup: () => clearInterval(keepAlive) };
@@ -261,7 +275,7 @@ wss.on("connection", (ws) => {
 
   ws.on("message", (message) => {
     try {
-      const data = JSON.parse(message);
+      const data = JSON.parse(message.toString());
       
       // Lidar com diferentes tipos de mensagens
       switch (data.type) {

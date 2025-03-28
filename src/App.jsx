@@ -1,10 +1,10 @@
-// src/App.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import { FaMicrophone, FaMicrophoneSlash, FaRedo, FaInfoCircle } from 'react-icons/fa';
 import TranscriptionPanel from './components/TranscriptionPanel';
 import TipPanel from './components/TipPanel';
 import StepIndicator from './components/StepIndicator';
 import InfoModal from './components/InfoModal';
+import { normalizeAudio, detectSilence } from './utils/audioUtils';
 
 const WS_URL = 'ws://localhost:3001';
 
@@ -21,6 +21,7 @@ const App = () => {
   const mediaRecorder = useRef(null);
   const audioContext = useRef(null);
   const connectionId = useRef(null);
+  const processorRef = useRef(null);
   
   // Inicializar WebSocket
   useEffect(() => {
@@ -33,6 +34,7 @@ const App = () => {
   
   // Função para conectar ao WebSocket
   const connectWebSocket = () => {
+    console.log('Tentando conectar ao WebSocket...');
     ws.current = new WebSocket(WS_URL);
     
     ws.current.onopen = () => {
@@ -82,6 +84,7 @@ const App = () => {
               text: message.data.text,
               severity: message.data.severity
             });
+            
             // Estimar a etapa de vendas com base na dica (simplificado)
             if (message.data.text.toLowerCase().includes('abordagem') || 
                 message.data.text.toLowerCase().includes('contato inicial')) {
@@ -134,39 +137,59 @@ const App = () => {
       // Solicitar acesso ao microfone
       mediaStream.current = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      // Configurar AudioContext para processamento de áudio
-      audioContext.current = new (window.AudioContext || window.webkitAudioContext)();
-      const source = audioContext.current.createMediaStreamSource(mediaStream.current);
+      // Criar blob para armazenar dados de áudio
+      const chunks = [];
       
-      // Configurar processador de áudio
-      const processor = audioContext.current.createScriptProcessor(1024, 1, 1);
-      processor.onaudioprocess = (e) => {
-        if (isRecording && ws.current && ws.current.readyState === WebSocket.OPEN) {
-          // Obter dados do canal de áudio
-          const inputData = e.inputBuffer.getChannelData(0);
-          
-          // Converter para Int16
-          const pcmData = new Int16Array(inputData.length);
-          for (let i = 0; i < inputData.length; i++) {
-            pcmData[i] = inputData[i] * 0x7FFF;
-          }
-          
-          // Enviar para o servidor
-          const buffer = Buffer.from(pcmData.buffer);
-          ws.current.send(JSON.stringify({
-            type: 'audio_data',
-            data: buffer.toString('base64')
-          }));
+      // Configurar MediaRecorder com codificação mais simples
+      mediaRecorder.current = new MediaRecorder(mediaStream.current, {
+        mimeType: 'audio/webm' // Tipo MIME mais amplamente suportado
+      });
+      
+      // Evento para capturar dados de áudio
+      mediaRecorder.current.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
         }
       };
       
-      // Conectar nós de áudio
-      source.connect(processor);
-      processor.connect(audioContext.current.destination);
+      // Quando os dados estiverem disponíveis, enviar para o servidor
+      mediaRecorder.current.onstop = () => {
+        // Só processamos se tivermos conexão WebSocket ativa
+        if (!ws.current || ws.current.readyState !== WebSocket.OPEN) return;
+        
+        const blob = new Blob(chunks, { type: 'audio/webm' });
+        
+        // Converter o blob para ArrayBuffer e enviar como base64
+        blob.arrayBuffer().then(arrayBuffer => {
+          const base64Data = arrayBufferToBase64(arrayBuffer);
+          
+          // Enviar dados para o servidor
+          ws.current.send(JSON.stringify({
+            type: 'audio_data',
+            data: base64Data
+          }));
+          
+          // Limpar chunks para próxima gravação
+          chunks.length = 0;
+        });
+      };
       
-      // Iniciar MediaRecorder (usado apenas para tracking de estado)
-      mediaRecorder.current = new MediaRecorder(mediaStream.current);
-      mediaRecorder.current.start();
+      // Iniciar gravação com intervalo mais frequente
+      mediaRecorder.current.start(200); // Captura dados a cada 200ms
+      
+      // Configurar um intervalo para parar e reiniciar o MediaRecorder periodicamente
+      // para enviar os dados para o servidor
+      const recordingInterval = setInterval(() => {
+        if (!isRecording) {
+          clearInterval(recordingInterval);
+          return;
+        }
+        
+        if (mediaRecorder.current && mediaRecorder.current.state === 'recording') {
+          mediaRecorder.current.stop();
+          mediaRecorder.current.start(200);
+        }
+      }, 1000); // Enviar dados a cada 1 segundo
       
       // Notificar o servidor para iniciar a transcrição
       ws.current.send(JSON.stringify({
@@ -180,6 +203,16 @@ const App = () => {
     }
   };
   
+  // Função utilitária para converter ArrayBuffer para base64
+  const arrayBufferToBase64 = (buffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(binary);
+  };
+  
   // Função para parar a gravação
   const stopRecording = () => {
     // Parar MediaRecorder
@@ -190,11 +223,6 @@ const App = () => {
     // Parar streams
     if (mediaStream.current) {
       mediaStream.current.getTracks().forEach(track => track.stop());
-    }
-    
-    // Fechar AudioContext
-    if (audioContext.current) {
-      audioContext.current.close();
     }
     
     // Notificar o servidor para parar a transcrição
@@ -249,9 +277,15 @@ const App = () => {
       
       <main className="container mx-auto p-4">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Painel lateral com indicador de etapas */}
+          {/* Painel lateral */}
           <div className="lg:col-span-1">
             <div className="card mb-6">
+              <h2 className="text-xl font-semibold mb-4">Etapas de Venda</h2>
+              <StepIndicator currentStep={currentStep} />
+            </div>
+            
+            {/* Painel de dicas */}
+            <div className="card">
               <h2 className="text-xl font-semibold mb-4">Dicas de Vendas</h2>
               <TipPanel tip={currentTip} />
             </div>
