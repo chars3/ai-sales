@@ -1,0 +1,38 @@
+/* src/index.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-md font-medium transition-colors;
+  }
+  
+  .btn-primary {
+    @apply bg-primary-600 text-white hover:bg-primary-700;
+  }
+  
+  .btn-outline {
+    @apply border border-primary-600 text-primary-600 hover:bg-primary-50;
+  }
+  
+  .card {
+    @apply bg-white rounded-lg shadow-md p-6;
+  }
+  
+  .tip-card {
+    @apply p-4 rounded-lg shadow-lg transition-all duration-300 transform;
+  }
+  
+  .tip-normal {
+    @apply bg-primary-100 border-l-4 border-primary-500;
+  }
+  
+  .tip-warning {
+    @apply bg-yellow-100 border-l-4 border-yellow-500;
+  }
+  
+  .tip-alert {
+    @apply bg-red-100 border-l-4 border-red-500;
+  }
+}
